@@ -1,0 +1,223 @@
+@APISIX_ADMIN_KEY=edd1c9f034335f136f87ad84b625c8f1
+@CLIENT_API_KEY=abcdefghijk2026xyz
+@CLIENT_API_KEY_2=abcdefghijk2026xyzmno
+@RESOURCE_NAME=resourcename
+@DEPLOYMENT_NAME=gpt-5.5
+@AZURE_AI_API_VERSION=2024-10-21
+@ROUTE_APISIX=/microsoft-foundry
+@VAULT_TOKEN=1f91d80e-0a03-49b3-b84b-f1de3d172eec
+@MICROSOFT_FOUNDARY_KEY1=FOUNDRY_KEY1
+
+
+###
+# Passo 1: Crie aqui um mount para o Vault do APISIX
+curl "http://127.0.0.1:1337/v1/sys/mounts/apisix" -X POST \
+  -H "X-Vault-Token: {{VAULT_TOKEN}}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "kv",
+    "options": {
+      "version": "1"
+    }
+  }'
+
+
+###
+# Passo 2: Criar secret para o vault do APISIX com a chave do Microsoft Foundry
+curl "http://127.0.0.1:1337/v1/apisix/foundry" -X POST \
+  -H "X-Vault-Token: {{VAULT_TOKEN}}" \
+  -H "Content-Type: application/json" \
+  -d '{
+      "key1": "{{MICROSOFT_FOUNDARY_KEY1}}"
+  }'
+
+
+###
+# Passo 3: Consultar o Secret criado no Vault do APISIX
+curl "http://127.0.0.1:1337/v1/apisix/foundry" -X GET \
+  -H "X-Vault-Token: {{VAULT_TOKEN}}"
+
+
+###
+# Passo 4: Configurar Vault para uso no APISIX
+curl http://127.0.0.1:9180/apisix/admin/secrets/vault/1 \
+  -H "X-API-KEY: {{APISIX_ADMIN_KEY}}" -X PUT -d '
+{
+    "uri": "http://openbao-dev:1337",
+    "prefix": "apisix",
+    "token": "{{VAULT_TOKEN}}"
+}'
+
+
+###
+# Passo 5: Consultar a configuração do Vault no APISIX
+curl "http://127.0.0.1:9180/apisix/admin/secrets/vault/1" -X GET \
+  -H "X-API-KEY: {{APISIX_ADMIN_KEY}}"
+
+
+###
+# Passo 6: Configurar traces do APISIX para OpenTelemetry
+curl http://127.0.0.1:9180/apisix/admin/plugin_metadata/opentelemetry -H "X-API-KEY: {{APISIX_ADMIN_KEY}}" -X PUT -d '
+{
+    "trace_id_source": "x-request-id",
+    "resource": {
+      "service.name": "APISIX",
+      "deployment.environment.name": "development"
+    },
+    "collector": {
+      "address": "alloy:4318",
+      "request_timeout": 3,
+      "request_headers": {
+      }
+    },
+    "batch_span_processor": {
+      "drop_on_queue_full": false,
+      "max_queue_size": 1024,
+      "batch_timeout": 2,
+      "inactive_timeout": 1,
+      "max_export_batch_size": 16
+    },
+    "set_ngx_var": false
+}'
+
+
+###
+# Passo 7: Criar o Consumer com a API Key do cliente.
+curl "http://127.0.0.1:9180/apisix/admin/consumers" -X PUT \
+  -H "X-API-KEY: {{APISIX_ADMIN_KEY}}" \
+  -d '{
+    "username": "consoleappchatai",
+    "plugins": {
+      "key-auth": {
+        "key": "{{CLIENT_API_KEY}}"
+      }
+    }
+  }'
+
+
+###
+# Passo 8: Criar segundo Consumer com a API Key do cliente.
+curl "http://127.0.0.1:9180/apisix/admin/consumers" -X PUT \
+  -H "X-API-KEY: {{APISIX_ADMIN_KEY}}" \
+  -d '{
+    "username": "consoleappchatai2",
+    "plugins": {
+      "key-auth": {
+        "key": "{{CLIENT_API_KEY_2}}"
+      }
+    }
+  }'
+
+
+###
+# Passo 9: Criar a rota exigindo a API Key do cliente e com um secret
+# para a chave do Microsoft Foundry.
+curl "http://127.0.0.1:9180/apisix/admin/routes" -X PUT \
+  -H "X-API-KEY: {{APISIX_ADMIN_KEY}}" \
+  -d '{
+    "id": "foundry-gpt-5.5",
+    "uri": "{{ROUTE_APISIX}}/{{DEPLOYMENT_NAME}}/*",
+    "methods": ["POST"],
+    "plugins": {
+      "key-auth": {},
+      "consumer-restriction": {
+          "whitelist": [
+              "consoleappchatai"
+          ]
+      },
+      "ai-prompt-guard": {
+        "deny_patterns": ["(?i)AWS", "(?i)Amazon", "(?i)Oracle"]
+      },
+      "opentelemetry": {
+        "sampler": {
+          "name": "always_on"
+        }
+      },
+      "ai-proxy": {
+        "provider": "azure-openai",
+        "auth": {
+          "header": {
+            "api-key": "$secret://vault/1/foundry/key1"
+          }
+        },
+        "options":{
+          "model": "{{DEPLOYMENT_NAME}}"
+        },
+        "timeout": 120000,
+        "override": {
+          "endpoint": "https://{{RESOURCE_NAME}}.openai.azure.com/openai/deployments/{{DEPLOYMENT_NAME}}/chat/completions?api-version={{AZURE_AI_API_VERSION}}"
+        }
+      }
+    },
+    "upstream": {
+      "type": "roundrobin",
+      "nodes": {
+        "httpbin.org": 1
+      }
+    }
+  }'
+
+
+###
+# Passo 10: Testar a rota criada.
+curl http://localhost:9080{{ROUTE_APISIX}}/{{DEPLOYMENT_NAME}}/ \
+  -X POST \
+  -H "apikey: {{CLIENT_API_KEY}}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      { "role": "user", "content": "Fale resumidamente sobre a linguagem C#" }
+    ]
+  }'
+
+
+###
+# Passo 11: Testar a rota criada com um consumer inválido.
+curl http://localhost:9080{{ROUTE_APISIX}}/{{DEPLOYMENT_NAME}}/ \
+  -X POST \
+  -H "apikey: {{CLIENT_API_KEY_2}}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      { "role": "user", "content": "Fale resumidamente sobre a linguagem C#" }
+    ]
+  }'
+
+
+###
+# Passo 12: Testar a rota criada com um termo inválido na pergunta.
+curl http://localhost:9080{{ROUTE_APISIX}}/{{DEPLOYMENT_NAME}}/ \
+  -X POST \
+  -H "apikey: {{CLIENT_API_KEY}}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      { "role": "user", "content": "Fale resumidamente sobre Aws" }
+    ]
+  }'
+
+
+###
+# Passo 13: Testar novamente a rota criada.
+curl http://localhost:9080{{ROUTE_APISIX}}/{{DEPLOYMENT_NAME}}/ \
+  -X POST \
+  -H "apikey: {{CLIENT_API_KEY}}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      { "role": "user", "content": "Fale resumidamente sobre o Microsoft Azure" }
+    ]
+  }'
+
+
+###
+# Passo 14: Testar a rota criada com um novo termo inválido na pergunta.
+curl http://localhost:9080{{ROUTE_APISIX}}/{{DEPLOYMENT_NAME}}/ \
+  -X POST \
+  -H "apikey: {{CLIENT_API_KEY}}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      { "role": "user", "content": "Fale resumidamente sobre Certificações Oracle" }
+    ]
+  }'
