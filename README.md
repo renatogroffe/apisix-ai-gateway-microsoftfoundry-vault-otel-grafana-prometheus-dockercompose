@@ -21,9 +21,14 @@ Visualizando Secrets a partir da interface do OpenBao:
 
 ![Visualizando Secrets - OpenBao UI](img/openbao-01.png)
 
+Testando a rota do ai-proxy criada no APISIX a partir do Visual Studio Code:
+
+![Testes via VS Code](img/vscode-01.png)
+
 Trace gerado durante testes com a rota do ai-proxy (incluindo o acesso ao secret):
 
 ![Trace no Grafana Tempo](img/tempo-01.png)
+
 
 Dashboard do Grafana para APISIX:
 
